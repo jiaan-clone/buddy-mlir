@@ -70,7 +70,7 @@ $ export PYTHONPATH=${BUDDY_MLIR_BUILD_DIR}/python_packages:${PYTHONPATH}
 $ export DEEPSEEKR1_MODEL_PATH=/path-to-deepseek-r1-model/
 
 // For example:
-$ export DEEPSEEKR1_MODEL_PATH=/home/xxx/DeepSeek-R1-Distill-Qwen-1.5B
+$ export DEEPSEEKR1_MODEL_PATH=/home/king/.cache/huggingface/hub/models--deepseek-ai--DeepSeek-R1-Distill-Qwen-1.5B/snapshots/ad9f0ae0864d7fbcd1cd905e3c6c5b069cc8b562
 ```
 Alternatively, you can leave the path blank, and import-deepseek-r1.py will automatically download the model for you.
 

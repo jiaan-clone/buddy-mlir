@@ -59,83 +59,83 @@ inline std::mutex &mmapMemRefAllocationsMutex() {
 // - T represents the type of the elements.
 // - N represents the number of dimensions.
 // - The storage order is NCHW.
-template <typename T, size_t N> class MemRef {
-public:
+template <typename T, size_t N> class MemRef { // T 是元素类型，N 是编译期维数。
+public: // 对调用者开放的构造、赋值、访问和数据操作接口。
   // Constructor from shape.
-  MemRef(intptr_t sizes[N]);
-  MemRef(std::vector<size_t> sizes);
-  MemRef(std::vector<size_t> sizes, MemRefAllocationKind allocationKind);
-  MemRef(intptr_t sizes[N], T init);
-  MemRef(intptr_t sizes[N], bool needMalloc, intptr_t offset);
-  MemRef(std::vector<size_t> sizes, T init);
-  MemRef(std::vector<size_t> sizes, bool needMalloc, intptr_t offset);
+  MemRef(intptr_t sizes[N]); // 根据 N 维形状数组构造并分配存储。
+  MemRef(std::vector<size_t> sizes); // 根据动态长度的形状向量构造并分配存储。
+  MemRef(std::vector<size_t> sizes, MemRefAllocationKind allocationKind); // 按指定策略分配存储。
+  MemRef(intptr_t sizes[N], T init); // 根据形状数组构造，并用 init 初始化所有元素。
+  MemRef(intptr_t sizes[N], bool needMalloc, intptr_t offset); // 可选分配存储并设置元素偏移。
+  MemRef(std::vector<size_t> sizes, T init); // 根据形状向量构造，并用 init 初始化所有元素。
+  MemRef(std::vector<size_t> sizes, bool needMalloc, intptr_t offset); // 使用向量形状配置分配和偏移。
   // Constructor from data.
-  MemRef(const T *data, intptr_t sizes[N], intptr_t offset = 0);
-  MemRef(const T *data, std::vector<size_t> sizes, intptr_t offset = 0);
+  MemRef(const T *data, intptr_t sizes[N], intptr_t offset = 0); // 按数组形状复制外部数据，可指定偏移。
+  MemRef(const T *data, std::vector<size_t> sizes, intptr_t offset = 0); // 按向量形状复制外部数据。
   // Constructor from a unique_ptr, taking over.
-  MemRef(std::unique_ptr<T> &uptr, intptr_t sizes[N], intptr_t offset = 0);
+  MemRef(std::unique_ptr<T> &uptr, intptr_t sizes[N], intptr_t offset = 0); // 接管 unique_ptr 的存储所有权。
   // Copy constructor.
-  MemRef(const MemRef<T, N> &other);
+  MemRef(const MemRef<T, N> &other); // 深拷贝同类型 MemRef 的描述信息和数据。
   // Copy assignment operator.
-  MemRef<T, N> &operator=(const MemRef<T, N> &other);
+  MemRef<T, N> &operator=(const MemRef<T, N> &other); // 深拷贝赋值并返回当前对象引用。
   // Move constructor.
-  MemRef(MemRef<T, N> &&other) noexcept;
+  MemRef(MemRef<T, N> &&other) noexcept; // 转移 other 的存储所有权，不抛出异常。
   // Move assignment operator.
-  MemRef<T, N> &operator=(MemRef<T, N> &&other) noexcept;
+  MemRef<T, N> &operator=(MemRef<T, N> &&other) noexcept; // 释放旧存储后接管 other 的资源。
   // Desctrutor.
-  ~MemRef();
+  ~MemRef(); // 销毁对象并释放其拥有的底层存储。
   // Concat two MemRefs into a MemRef.
-  void concatenateMemRefs(MemRef<T, N> &other0, MemRef<T, N> &other1,
-                          MemRef<T, N> &other2, size_t concatDim);
+  void concatenateMemRefs(MemRef<T, N> &other0, MemRef<T, N> &other1, // other0 和 other1 是两个拼接输入。
+                          MemRef<T, N> &other2, size_t concatDim); // 沿 concatDim 拼接并将结果写入 other2。
   // Split a MemRef into two MemRefs.
-  void splitMemRef(MemRef<T, N> &&other0, MemRef<T, N> &other1,
-                   MemRef<T, N> &other2, size_t splitDim, size_t splitIndex);
+  void splitMemRef(MemRef<T, N> &&other0, MemRef<T, N> &other1, // 移入源 MemRef，并写入第一个结果。
+                   MemRef<T, N> &other2, size_t splitDim, size_t splitIndex); // 写入第二个结果并指定切分位置。
   // Add two MemRef
-  void addMemRef(MemRef<T, N> &a, MemRef<T, N> &b);
+  void addMemRef(MemRef<T, N> &a, MemRef<T, N> &b); // 将 b 逐元素累加到 a；该实现不写入当前对象。
   // Get the data pointer.
-  T *getData();
+  T *getData(); // 返回 aligned 指针；调用方需要自行处理 offset。
   // Get the data.
-  std::vector<T> getDataVector();
+  std::vector<T> getDataVector(); // 将数据复制到 std::vector<T> 后返回。
   // Get the sizes (shape).
-  const intptr_t *getSizes() { return sizes; }
+  const intptr_t *getSizes() { return sizes; } // 返回只读的 N 维形状数组指针。
   // Get the strides.
-  const intptr_t *getStrides() { return strides; }
+  const intptr_t *getStrides() { return strides; } // 返回只读的 N 维步长数组指针。
   // Get the rank of the memref.
-  size_t getRank() const { return N; }
+  size_t getRank() const { return N; } // 返回模板参数 N，即编译期确定的秩。
   // Get the size (number of elements).
-  size_t getSize() const { return product(this->sizes); }
+  size_t getSize() const { return product(this->sizes); } // 返回各维大小乘积，即元素总数。
   // Get the element at index.
-  const T &operator[](size_t index) const;
-  T &operator[](size_t index);
+  const T &operator[](size_t index) const; // 为 const 对象提供只读的一维索引访问。
+  T &operator[](size_t index); // 为可修改对象提供可写的一维索引访问。
   // release the pointer
-  T *release();
+  T *release(); // 移交底层指针所有权，使当前对象不再负责释放它。
 
-protected:
+protected: // 仅 MemRef 本身及其派生类可访问的实现接口和描述符字段。
   // Default constructor.
   // This constructor is designed for derived domain-specific constructor.
-  MemRef() {};
+  MemRef() {}; // 仅供派生类使用的空默认构造函数，不分配数据存储。
   // Set the strides.
   // Computes the strides of the transposed tensor for transpose=true.
-  void setStrides();
+  void setStrides(); // 根据 sizes 计算连续布局下各维的步长。
   // Compute the product of array elements.
-  size_t product(const intptr_t sizes[N]) const;
+  size_t product(const intptr_t sizes[N]) const; // 计算 N 个维度大小的乘积。
   // Allocate and release owned storage.
-  void allocateStorage(size_t size, MemRefAllocationKind allocationKind);
-  void releaseAllocatedStorage();
+  void allocateStorage(size_t size, MemRefAllocationKind allocationKind); // 按策略为 size 个元素分配存储。
+  void releaseAllocatedStorage(); // 依据分配方式释放当前对象拥有的存储。
 
   // Data.
   // The `aligned` and `allocated` members point to the same address, `aligned`
   // member is responsible for handling data, and `allocated` member is
   // resposible for handling the memory space.
-  T *allocated = nullptr;
-  T *aligned = nullptr;
+  T *allocated = nullptr; // 保存原始分配地址，用于最终释放内存。
+  T *aligned = nullptr; // 保存实际数据访问地址，通常与 allocated 相同。
   // Offset.
-  intptr_t offset = 0;
+  intptr_t offset = 0; // 记录数据起点相对 aligned 的元素偏移量。
   // Shape.
-  intptr_t sizes[N];
+  intptr_t sizes[N]; // 保存运行期的 N 维形状；N 只限定维数，不限定各维大小。
   // Strides.
-  intptr_t strides[N];
-};
+  intptr_t strides[N]; // 保存每个维度跨一步需要跳过的元素数。
+}; // MemRef 类模板定义结束。
 
 // MemRef Shape Constructor.
 // Construct a MemRef object from the data shape and (optional)initial value.

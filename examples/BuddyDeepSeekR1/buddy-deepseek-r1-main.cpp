@@ -28,14 +28,40 @@
 
 using namespace buddy;
 double total_time = 0;
-constexpr size_t ParamsSize = 1777088064;
-constexpr size_t MaxVocabSize = 151936;
+constexpr size_t ParamsSize = 1777088064;  // 定义参数尺寸，即：arg0.data 文件尺寸
+constexpr size_t MaxVocabSize = 151936;    // 定义词表尺寸，即deepseek r1 模型所使用的词表见：vocab.txt 文件
+/**
+ * MaxTokenLength ： 表示每个 KV Head 最多缓存 1024 个 Token 的 K 或 V 向量。
+ * 这个值来自导入脚本的静态缓存配置：max_cache_len=1024
+ * buddy-mlir/examples/BuddyDeepSeekR1/import-deepseek-r1.py
+ */
 constexpr size_t MaxTokenLength = 1024;
-
+/** 
+ * NUM_LAYERS 通常表示 Transformer 架构模型的层数，deepseek r1 1.5B 模型的层数是28，
+ * 这里的 NUM_LAYERS 变量应该设为28，不过该文件中并没有使用该变量，所以不影响。
+ */
 constexpr size_t NUM_LAYERS = 56;
+/**
+ * // HiddenSize 表示每个Attention Head 的向量维度，更准确的名称为 HeadDim。
+ * 它决定每个token 的 K/V 向量长度，以及 KV Cache 的最后一维。
+ * 通常由模型的配置决定。models--deepseek-ai--DeepSeek-R1-Distill-Qwen-1.5B -> config.json
+ * 例如，deepseek r1 模型隐藏维度 hidden_size = 1536; Query Head 数量 = 12 
+ * HeadDim = 1536 / 12 = 128
+ */
 constexpr size_t HiddenSize = 128;
-constexpr size_t HeadNum = 2;
 
+/**
+ * HeadNum 表示模型每层 Attention 中的 KV Head 数量
+ * 决定每个 K/V Cache 张量的第二维：
+ * KV Cache：[1, 2, 1024, 128]
+ *            ↑
+ *         HeadNum
+ * 对应模型配置：
+ * "num_key_value_heads": 2 ，models--DeepSeek-R1-Distill-Qwen-1.5B -> config.json
+ */
+constexpr size_t HeadNum = 2;  
+
+// 该函数为 MLIR 生成的代码提供计时接口，返回当前时间，单位为秒
 extern "C" double _mlir_ciface_rtclock() {
 #ifndef _WIN32
   struct timeval tp;
@@ -48,6 +74,12 @@ extern "C" double _mlir_ciface_rtclock() {
   return 0.0;
 #endif // _WIN32
 }
+
+/**
+ * PrefillReturns 用于接收模型 prefill 阶段的全部输出：
+ * kv0～kv55：28层的K/V Cache
+ * logits   ：每个输入位置对整个词表的预测评分
+ */
 
 struct PrefillReturns {
   MemRef<float, 4> kv0;
@@ -106,6 +138,9 @@ struct PrefillReturns {
   MemRef<float, 4> kv53;
   MemRef<float, 4> kv54;
   MemRef<float, 4> kv55;
+  /**
+   * logits 是模型对“下一个 token 是词表中每个 token 的可能性”的原始评分。
+   */
   MemRef<float, 3> logits;
 };
 
@@ -349,6 +384,8 @@ int findMaxIndex(const float *start, const float *end) {
   return std::distance(start, std::max_element(start, end));
 }
 
+// 把 prefill 产生的“有效提示词 KV Cache”复制到 decode 使用的 KV Cache 中，
+// 使 decode 能在提示词上下文基础上继续生成。
 void copy_kv_by_cache_position_block(const KVPtrArray &prefillPtrs,
                                      const KVPtrArray &decodePtrs,
                                      int cache_position) {
@@ -388,7 +425,7 @@ int main() {
 
   /// Get user message.
   std::string inputStr;
-  getUserInput(inputStr);
+  getUserInput(inputStr);  // 读入用户键入的信息
 
   /// Initialize data containers
   Text<size_t, 2> outputContainer;
@@ -401,6 +438,20 @@ int main() {
 
   // Helper lambda to create a zero-initialized KV MemRef.
   auto makeKV = []() {
+    /**
+     * 创建的是一个四维、全部初始化为 0.0f 的 KV Cache 张量。四个维度的准确语义是：
+     * [batch_size, num_key_value_heads, max_cache_length, head_dimension]
+     * 实际带入的值：[1, 2, 1024, 128]
+     * batch_size = 1 ： Batch Size
+     * HeadNum = 2 ：KV Head 数量
+     * MaxTokenLength = 1024 ： KV Cache 最大 Token 容量
+     * HiddenSize = 128 : 单个 Attention Head 的宽度
+     * 综上：一个 MemRef<float, 4> 表示一个 K 张量或一个 V 张量：
+     * 维度 0：1 个 Batch
+     * 维度 1：2 个 KV Head
+     * 维度 2：每个 Head 最多 1024 个历史 Token
+     * 维度 3：每个 Token 的 K/V 向量长度为 128
+     */
     return MemRef<float, 4>({1, HeadNum, MaxTokenLength, HiddenSize}, 0);
   };
 
@@ -485,24 +536,38 @@ int main() {
       inferenceEnd - inferenceStart;
 
   int tokenIndex = inputContainerPrefill.getTokenCnt() - 1;
+  // 定位到“输入序列最后一个有效 token 对应的整行词表 logits”
   const float *startPtr =
+      // tokenIndex * MaxVocabSize  计算在到达第 tokenIndex 个位置前，需要跳过多少个 float。因为每个 token 都对应 151936 个词表评分。
       prefillRet.logits.getData() + tokenIndex * MaxVocabSize;
   const float *endPtr = startPtr + MaxVocabSize;
+  // 会遍历这连续的 151936 个评分，找到最高分对应的词表 token ID，用作模型生成的下一个 token。
   int maxIndex = findMaxIndex(startPtr, endPtr);
   std::string tok = inputContainerPrefill.getStr(maxIndex);
+  // 打印 prefill 耗时
   printIterInfo(0, tok, inferenceTime.count() / 1000);
   const double prefillSeconds = inferenceTime.count() / 1000.0;
   if (prefillSeconds > 0.0) {
     prefillTokensPerSec = static_cast<double>(MaxTokenLength) / prefillSeconds;
   }
+  // 把 prefill 阶段选出的下一个 token ID，写入 decode 阶段的输入缓冲区。后续 forward_decode() 会读取这个 token，继续生成下一个 token。
   inputContainerDecode.getData()[0] = (long long)maxIndex;
+  // 把该 token 保存到输出序列中。
   outputContainer.appendTokenIdx(maxIndex);
 
+  // 把 prefillRet 中分散的 kv0～kv55 地址收集到一个指针数组中
   // Build Prefill KV pointer array for copying.
   KVPtrArray prefillPtrs = buildPrefillKVPtrs(prefillRet);
 
   // Initialize Decode returns.
+  /**
+   * 为 decode 阶段创建 logits 缓冲区，形状为：
+   * [batch, decode序列长度, 词表大小]
+   * [1,     1,              151936]
+   * Decode 每次只处理一个新 token，因此第二维为 1。
+   */
   MemRef<float, 3> logits_decode({1, 1, MaxVocabSize});
+  // 对 DecodeReturns 结构体进行初始化
   DecodeReturns decodeRet = {
       MemRef<long long, 1>({1}, 0LL), // cache_position_out
       kv0,
@@ -592,12 +657,15 @@ int main() {
 
   KVPtrArray decodePtrs = buildDecodeKVPtrs(decodeRet);
 
+  // 把 prefill 生成的有效提示词 KV Cache 复制到 decode KV Cache。
   // Copy KV cache from prefill to decode.
   copy_kv_by_cache_position_block(
       prefillPtrs, decodePtrs,
       static_cast<int>(inputContainerPrefill.getTokenCnt()));
 
+  // 将 KV Cache 下一次写入位置设置为提示词 token 数。例如提示词有10个 token，则位置 0～9 已占用，下次写入位置为 10。
   cachePosition.getData()[0] = inputContainerPrefill.getTokenCnt();
+  // 计算剩余可执行的 decode 次数。
   int generateLen = MaxTokenLength - inputContainerPrefill.getTokenCnt();
   double decodeTimeAccumMs = 0.0;
   size_t decodeTokens = 0;
@@ -606,6 +674,8 @@ int main() {
   for (int i = 1; i <= generateLen; i++) {
     const auto inferenceStart = std::chrono::high_resolution_clock::now();
 
+    // 将当前 Cache 写入位置同步到 MLIR 接口要求的辅助字段中。
+    // 这些字段主要用于匹配 forward_decode 的 ABI。
     // Update dummy fields with current cache position.
     decodeRet.ret_dummy0.getData()[0] = cachePosition.getData()[0];
     decodeRet.ret_dummy1.getData()[0] = cachePosition.getData()[0];
@@ -635,6 +705,15 @@ int main() {
     decodeRet.ret_dummy25.getData()[0] = cachePosition.getData()[0];
     decodeRet.ret_dummy26.getData()[0] = cachePosition.getData()[0];
 
+    /**
+     * 调用 MLIR 生成的 decode 函数，输入包括：
+     * 模型参数
+     * 当前token
+     * 当前cachePosition
+     * 已有KV Cache
+     * 
+     * 输出写回 decodeRet
+     */
     _mlir_ciface_forward_decode(
         &decodeRet, &ParamsContainer, &inputContainerDecode, &cachePosition,
         &decodeRet.kv0, &decodeRet.kv1, &decodeRet.ret_dummy0, &decodeRet.kv2,
@@ -665,12 +744,14 @@ int main() {
         &decodeRet.ret_dummy25, &decodeRet.kv52, &decodeRet.kv53,
         &decodeRet.ret_dummy26, &decodeRet.kv54, &decodeRet.kv55);
 
+    // 统计 decode 总耗时和已生成 token 数量。
     const auto inferenceEnd = std::chrono::high_resolution_clock::now();
     const std::chrono::duration<double, std::milli> inferenceTime =
         inferenceEnd - inferenceStart;
     decodeTimeAccumMs += inferenceTime.count();
     decodeTokens += 1;
 
+    // 在 decode 输出的 logits 中找到评分最高的 token ID。
     // Determine the generated token.
     const float *startPtr = decodeRet.logits.getData();
     const float *endPtr = startPtr + MaxVocabSize;
